@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -658,7 +658,7 @@ func TestMocks_BodyMatcher_SupportsRawArrays(t *testing.T) {
 
 func TestMocks_RequestBody(t *testing.T) {
 	tests := map[string]struct {
-		requestBody interface{}
+		requestBody any
 	}{
 		"supports string input": {`{"a":1}`},
 		"supports maps":         {map[string]int{"a": 1}},
@@ -972,7 +972,7 @@ func TestMocks_Response_SetsTextPlainIfNoContentTypeSet(t *testing.T) {
 
 	response := buildResponseFromMock(mockResponse)
 
-	bytes, _ := ioutil.ReadAll(response.Body)
+	bytes, _ := io.ReadAll(response.Body)
 	assert.Equal(t, string(bytes), "abcdef")
 	assert.Equal(t, "text/plain", response.Header.Get("Content-Type"))
 }
@@ -985,7 +985,7 @@ func TestMocks_Response_SetsTheBodyAsJSON(t *testing.T) {
 
 	response := buildResponseFromMock(mockResponse)
 
-	bytes, _ := ioutil.ReadAll(response.Body)
+	bytes, _ := io.ReadAll(response.Body)
 	assert.Equal(t, string(bytes), `{"a": 123}`)
 	assert.Equal(t, "application/json", response.Header.Get("Content-Type"))
 }
@@ -998,7 +998,7 @@ func TestMocks_ResponseJSON(t *testing.T) {
 
 	response := buildResponseFromMock(mockResponse)
 
-	bytes, _ := ioutil.ReadAll(response.Body)
+	bytes, _ := io.ReadAll(response.Body)
 	assert.Equal(t, string(bytes), `{"a":123}`)
 	assert.Equal(t, "application/json", response.Header.Get("Content-Type"))
 }
@@ -1012,7 +1012,7 @@ func TestMocks_Response_SetsTheBodyAsOther(t *testing.T) {
 
 	response := buildResponseFromMock(mockResponse)
 
-	bytes, _ := ioutil.ReadAll(response.Body)
+	bytes, _ := io.ReadAll(response.Body)
 	assert.Equal(t, string(bytes), `<html>123</html>`)
 	assert.Equal(t, "text/html", response.Header.Get("Content-Type"))
 }
@@ -1093,7 +1093,7 @@ func TestMocks_Standalone_WithContainer(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
-	data, err := ioutil.ReadAll(getRes.Body)
+	data, err := io.ReadAll(getRes.Body)
 
 	assert.NoError(t, err)
 	assert.JSONEq(t, `{"a": 12345}`, string(data))
@@ -1133,7 +1133,8 @@ func TestMocks_WithHTTPTimeout(t *testing.T) {
 
 	assert.Equal(t, true, err != nil)
 	var isTimeout bool
-	if err, ok := err.(net.Error); ok && err.Timeout() {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		isTimeout = true
 	}
 	assert.Equal(t, true, isTimeout)
@@ -1327,7 +1328,7 @@ func getUserData() []byte {
 	if err != nil {
 		panic(err)
 	}
-	bytes, err := ioutil.ReadAll(res.Body)
+	bytes, err := io.ReadAll(res.Body)
 	if err != nil {
 		panic(err)
 	}
@@ -1375,16 +1376,16 @@ var customCli = &http.Client{
 	Transport: &http.Transport{},
 }
 
-type HttpGet func(path string, response interface{})
+type HttpGet func(path string, response any)
 
 func NewHttpGet(cli *http.Client) HttpGet {
-	return func(path string, response interface{}) {
+	return func(path string, response any) {
 		res, err := cli.Get(fmt.Sprintf("http://localhost:8080%s", path))
 		if err != nil {
 			panic(err)
 		}
 
-		bytes, err := ioutil.ReadAll(res.Body)
+		bytes, err := io.ReadAll(res.Body)
 		if err != nil {
 			panic(err)
 		}
@@ -1405,3 +1406,60 @@ func (r *RecorderCaptor) Format(recorder *Recorder) {
 }
 
 var assert = DefaultVerifier{}
+
+func TestMocks_Response_DoesNotMutateMockHeadersBetweenInvocations(t *testing.T) {
+	mock := NewMock().
+		Get("/path").
+		RespondWith().
+		Cookie("a", "b").
+		Body(`{"a": 1}`).
+		Status(http.StatusOK).
+		AnyTimes().
+		End()
+
+	first := buildResponseFromMock(mock.response)
+	second := buildResponseFromMock(mock.response)
+
+	assert.Equal(t, []string{"a=b"}, first.Header["Set-Cookie"])
+	assert.Equal(t, []string{"a=b"}, second.Header["Set-Cookie"])
+	assert.Equal(t, "application/json", second.Header.Get("Content-Type"))
+	assert.Equal(t, map[string][]string{}, mock.response.headers)
+}
+
+func TestMocks_Response_HeaderChangesDoNotLeakBackToMock(t *testing.T) {
+	mock := NewMock().
+		Get("/path").
+		RespondWith().
+		Header("X-Custom", "one").
+		Status(http.StatusOK).
+		End()
+
+	res := buildResponseFromMock(mock.response)
+	res.Header.Add("X-Custom", "two")
+	res.Header.Set("X-Other", "three")
+
+	assert.Equal(t, map[string][]string{"X-Custom": {"one"}}, mock.response.headers)
+}
+
+func TestMocks_Copy_PointsRequestAndResponseAtTheCopy(t *testing.T) {
+	original := NewMock().
+		Get("/path").
+		RespondWith().
+		Status(http.StatusOK).
+		Times(2).
+		End()
+
+	copied := original.copy()
+
+	assert.Equal(t, true, copied != original)
+	assert.Equal(t, true, copied.request.mock == copied)
+	assert.Equal(t, true, copied.response.mock == copied)
+	assert.Equal(t, true, original.request.mock == original)
+	assert.Equal(t, true, original.response.mock == original)
+
+	copied.response.Status(http.StatusNotFound).Times(5)
+
+	assert.Equal(t, http.StatusOK, original.response.statusCode)
+	assert.Equal(t, 2, original.times)
+	assert.Equal(t, 5, copied.times)
+}

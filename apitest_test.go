@@ -3,9 +3,10 @@ package apitest_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
-	"io/ioutil"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -59,7 +61,7 @@ func TestApiTest_ResponseBody(t *testing.T) {
 func TestApiTest_HttpRequest(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		data, _ := ioutil.ReadAll(r.Body)
+		data, _ := io.ReadAll(r.Body)
 		if string(data) != `hello` {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -83,7 +85,7 @@ func TestApiTest_HttpRequest(t *testing.T) {
 func TestApiTest_AddsJSONBodyToRequest(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		data, _ := ioutil.ReadAll(r.Body)
+		data, _ := io.ReadAll(r.Body)
 		if string(data) != `{"a": 12345}` {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -107,7 +109,7 @@ func TestApiTest_AddsJSONBodyToRequest(t *testing.T) {
 func TestApiTest_AddsJSONBodyToRequest_SupportsFormatter(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		data, _ := ioutil.ReadAll(r.Body)
+		data, _ := io.ReadAll(r.Body)
 		if string(data) != `{"a": 12345}` {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -198,7 +200,7 @@ func TestApiTest_JSONBody(t *testing.T) {
 	}
 
 	tests := map[string]struct {
-		body interface{}
+		body any
 	}{
 		"string": {
 			body: `{"a": 12345}`,
@@ -210,14 +212,14 @@ func TestApiTest_JSONBody(t *testing.T) {
 			body: bodyStruct{A: 12345},
 		},
 		"map": {
-			body: map[string]interface{}{"a": 12345},
+			body: map[string]any{"a": 12345},
 		},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			handler := http.NewServeMux()
 			handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-				data, _ := ioutil.ReadAll(r.Body)
+				data, _ := io.ReadAll(r.Body)
 				assert.JSONEq(t, `{"a": 12345}`, string(data))
 				if r.Header.Get("Content-Type") != "application/json" {
 					w.WriteHeader(http.StatusBadRequest)
@@ -240,7 +242,7 @@ func TestApiTest_JSONBody(t *testing.T) {
 func TestApiTest_AddsJSONBodyToRequestUsingJSON(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		data, _ := ioutil.ReadAll(r.Body)
+		data, _ := io.ReadAll(r.Body)
 		if string(data) != `{"a": 12345}` {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -264,7 +266,7 @@ func TestApiTest_AddsJSONBodyToRequestUsingJSON(t *testing.T) {
 func TestApiTest_AddsTextBodyToRequest(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		data, _ := ioutil.ReadAll(r.Body)
+		data, _ := io.ReadAll(r.Body)
 		if string(data) != `hello` {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -284,7 +286,7 @@ func TestApiTest_AddsTextBodyToRequest(t *testing.T) {
 func TestApiTest_AddsQueryParamsToRequest(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		if "b" != r.URL.Query().Get("a") {
+		if r.URL.Query().Get("a") != "b" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -303,7 +305,7 @@ func TestApiTest_AddsQueryParamsToRequest(t *testing.T) {
 func TestApiTest_AddsQueryParamCollectionToRequest(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		if "a=b&a=c&a=d&e=f" != r.URL.RawQuery {
+		if r.URL.RawQuery != "a=b&a=c&a=d&e=f" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -323,7 +325,7 @@ func TestApiTest_AddsQueryParamCollectionToRequest(t *testing.T) {
 func TestApiTest_AddsQueryParamCollectionToRequest_HandlesEmpty(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		if "e=f" != r.URL.RawQuery {
+		if r.URL.RawQuery != "e=f" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -501,7 +503,7 @@ func TestApiTest_AddsCancelledContextToRequest(t *testing.T) {
 func TestApiTest_GraphQLQuery(t *testing.T) {
 	apitest.New().
 		HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			bodyBytes, err := ioutil.ReadAll(r.Body)
+			bodyBytes, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -527,7 +529,7 @@ func TestApiTest_GraphQLQuery(t *testing.T) {
 func TestApiTest_GraphQLRequest(t *testing.T) {
 	apitest.New().
 		HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			bodyBytes, err := ioutil.ReadAll(r.Body)
+			bodyBytes, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -540,7 +542,7 @@ func TestApiTest_GraphQLRequest(t *testing.T) {
 			expected := apitest.GraphQLRequestBody{
 				Query:         `query { todos { text } }`,
 				OperationName: "myOperation",
-				Variables: map[string]interface{}{
+				Variables: map[string]any{
 					"a": float64(1),
 					"b": "2",
 				},
@@ -553,7 +555,7 @@ func TestApiTest_GraphQLRequest(t *testing.T) {
 		Post("/query").
 		GraphQLRequest(apitest.GraphQLRequestBody{
 			Query: "query { todos { text } }",
-			Variables: map[string]interface{}{
+			Variables: map[string]any{
 				"a": 1,
 				"b": "2",
 			},
@@ -607,7 +609,7 @@ func TestApiTest_MatchesJSONResponseBodyWithFormatter(t *testing.T) {
 func TestApiTest_MatchesJSONBodyFromFile(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		data, _ := ioutil.ReadAll(r.Body)
+		data, _ := io.ReadAll(r.Body)
 		assert.JSONEq(t, `{"a": 12345}`, string(data))
 
 		w.WriteHeader(http.StatusCreated)
@@ -631,7 +633,7 @@ func TestApiTest_MatchesJSONBodyFromFile(t *testing.T) {
 func TestApiTest_MatchesBodyFromFile(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		data, _ := ioutil.ReadAll(r.Body)
+		data, _ := io.ReadAll(r.Body)
 		assert.JSONEq(t, `{"a": 12345}`, string(data))
 
 		w.WriteHeader(http.StatusCreated)
@@ -871,11 +873,11 @@ func TestApiTest_CustomAssert(t *testing.T) {
 
 func TestApiTest_VerifierCapturesTheTestMessage(t *testing.T) {
 	verifier := mocks.NewVerifier()
-	verifier.EqualFn = func(t apitest.TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {
+	verifier.EqualFn = func(t apitest.TestingT, expected, actual any, msgAndArgs ...any) bool {
 		if expected == http.StatusOK {
 			return true
 		}
-		args := msgAndArgs[0].(interface{}).([]interface{})
+		args := msgAndArgs[0].([]any)
 		assert.Equal(t, 2, len(args))
 		assert.Equal(t, "expected header 'Abc' not present in response", args[0].(string))
 		return true
@@ -907,7 +909,7 @@ func TestApiTest_Report(t *testing.T) {
 
 	apitest.New("some test").
 		Debug().
-		Meta(map[string]interface{}{"host": "abc.com"}).
+		Meta(map[string]any{"host": "abc.com"}).
 		Report(reporter).
 		Mocks(getUser).
 		Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -962,7 +964,7 @@ func TestApiTest_Recorder(t *testing.T) {
 	recorder.AddMessageResponse(messageResponse)
 
 	apitest.New("some test").
-		Meta(map[string]interface{}{"host": "abc.com"}).
+		Meta(map[string]any{"host": "abc.com"}).
 		Report(reporter).
 		Recorder(recorder).
 		Mocks(getUser).
@@ -1085,12 +1087,14 @@ func TestApiTest_ExposesRequestAndResponse(t *testing.T) {
 	assert.Equal(t, true, apiTest.Response() != nil)
 }
 
+type contextKey struct{}
+
 func TestApiTest_RequestContextIsPreserved(t *testing.T) {
-	ctxKey := struct{}{}
+	ctxKey := contextKey{}
 	handler := http.NewServeMux()
 	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
 		value := r.Context().Value(ctxKey).([]byte)
-		w.Write(value)
+		_, _ = w.Write(value)
 	})
 
 	interceptor := func(r *http.Request) {
@@ -1135,23 +1139,23 @@ func TestRealNetworking(t *testing.T) {
 	tokenValue := "ABCDEF"
 	http.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{Name: "Token", Value: tokenValue})
-		w.WriteHeader(203)
+		w.WriteHeader(http.StatusNonAuthoritativeInfo)
 	})
 	http.HandleFunc("/authenticated_resource", func(w http.ResponseWriter, r *http.Request) {
 		token, err := r.Cookie("Token")
-		if err == http.ErrNoCookie {
-			w.WriteHeader(400)
+		if errors.Is(err, http.ErrNoCookie) {
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		if err != nil {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		if token.Value != tokenValue {
 			t.Fatalf("token did not equal %s", tokenValue)
 		}
-		w.WriteHeader(204)
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	go func() {
@@ -1284,7 +1288,7 @@ func TestApiTest_AddsMultipartFormData(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				data, err := ioutil.ReadAll(f)
+				data, err := io.ReadAll(f)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1376,7 +1380,7 @@ func TestApiTest_AddsMultipartFormDataWithCustomFS(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				data, err := ioutil.ReadAll(f)
+				data, err := io.ReadAll(f)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1408,14 +1412,16 @@ func TestApiTest_CombineFormDataWithMultipart(t *testing.T) {
 		apitest.New().
 			Post("/hello").
 			MultipartFormData("name", "John").
-			FormData("name", "John")
+			FormData("name", "John").
+			Expect(t)
 		return
 	}
 	if os.Getenv("RUN_FATAL_TEST") == "File" {
 		apitest.New().
 			Post("/hello").
 			MultipartFile("file", "testdata/request_body.json").
-			FormData("name", "John")
+			FormData("name", "John").
+			Expect(t)
 		return
 	}
 
@@ -1430,7 +1436,8 @@ func TestApiTest_CombineFormDataWithMultipart(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=TestApiTest_CombineFormDataWithMultipart")
 			cmd.Env = append(os.Environ(), "RUN_FATAL_TEST="+tt)
 			err := cmd.Run()
-			if e, ok := err.(*exec.ExitError); ok && !e.Success() {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && !exitErr.Success() {
 				return
 			}
 			t.Fatalf("process ran with err %v, want exit status 1", err)
@@ -1447,7 +1454,7 @@ func TestApiTest_ErrorIfMockInvocationsDoNotMatchTimes(t *testing.T) {
 		End()
 
 	verifier := mocks.NewVerifier()
-	verifier.FailFn = func(t apitest.TestingT, failureMessage string, msgAndArgs ...interface{}) bool {
+	verifier.FailFn = func(t apitest.TestingT, failureMessage string, msgAndArgs ...any) bool {
 		assert.Equal(t, "mock was not invoked expected times", failureMessage)
 		return true
 	}
@@ -1530,7 +1537,7 @@ func getUserData() []byte {
 	if err != nil {
 		panic(err)
 	}
-	data, err := ioutil.ReadAll(res.Body)
+	data, err := io.ReadAll(res.Body)
 	if err != nil {
 		panic(err)
 	}
@@ -1538,3 +1545,159 @@ func getUserData() []byte {
 }
 
 var assert = apitest.DefaultVerifier{}
+
+func TestApiTest_ReportsAllUnmatchedMocks(t *testing.T) {
+	getUser := apitest.NewMock().
+		Get("http://localhost:8080/user").
+		RespondWith().
+		Status(http.StatusOK).
+		End()
+	getOrder := apitest.NewMock().
+		Get("http://localhost:8080/order").
+		RespondWith().
+		Status(http.StatusOK).
+		End()
+
+	res := apitest.New().
+		Mocks(getUser, getOrder).
+		Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).
+		Get("/").
+		Expect(t).
+		Status(http.StatusOK).
+		End()
+
+	unmatchedMocks := res.UnmatchedMocks()
+	assert.Equal(t, 2, len(unmatchedMocks))
+	assert.Equal(t, "http://localhost:8080/user", unmatchedMocks[0].URL.String())
+	assert.Equal(t, "http://localhost:8080/order", unmatchedMocks[1].URL.String())
+}
+
+func TestApiTest_AddsBasicAuthWithColonInPasswordToRequest(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "username" || password != "pass:word:1" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	apitest.New().
+		Handler(handler).
+		Get("/hello").
+		BasicAuth("username", "pass:word:1").
+		Expect(t).
+		Status(http.StatusOK).
+		End()
+}
+
+type recordingT struct {
+	fatals []string
+}
+
+func (r *recordingT) Errorf(format string, args ...any) {}
+
+func (r *recordingT) Fatal(args ...any) {
+	r.fatals = append(r.fatals, fmt.Sprint(args...))
+}
+
+func (r *recordingT) Fatalf(format string, args ...any) {
+	r.fatals = append(r.fatals, fmt.Sprintf(format, args...))
+}
+
+func TestApiTest_RequestBuilderErrorsAreReportedByExpect(t *testing.T) {
+	tests := map[string]struct {
+		build           func(*apitest.Request) *apitest.Request
+		expectedMessage string
+	}{
+		"body from missing file": {
+			build:           func(r *apitest.Request) *apitest.Request { return r.BodyFromFile("testdata/does-not-exist.json") },
+			expectedMessage: "does-not-exist.json",
+		},
+		"json from missing file": {
+			build:           func(r *apitest.Request) *apitest.Request { return r.JSONFromFile("testdata/does-not-exist.json") },
+			expectedMessage: "does-not-exist.json",
+		},
+		"json that cannot be marshalled": {
+			build:           func(r *apitest.Request) *apitest.Request { return r.JSON(make(chan int)) },
+			expectedMessage: "unsupported type",
+		},
+		"graphql request that cannot be marshalled": {
+			build: func(r *apitest.Request) *apitest.Request {
+				return r.GraphQLRequest(apitest.GraphQLRequestBody{Variables: map[string]any{"a": make(chan int)}})
+			},
+			expectedMessage: "unsupported type",
+		},
+		"multipart file that does not exist": {
+			build: func(r *apitest.Request) *apitest.Request {
+				return r.MultipartFile("file", "testdata/does-not-exist.json")
+			},
+			expectedMessage: "does-not-exist.json",
+		},
+		"form data combined with multipart": {
+			build: func(r *apitest.Request) *apitest.Request {
+				return r.MultipartFormData("name", "John").FormData("name", "John")
+			},
+			expectedMessage: "cannot be combined",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			rec := &recordingT{}
+
+			request := apitest.New().Post("/hello")
+			if got := test.build(request); got != request {
+				t.Fatalf("expected the builder to return the request for chaining")
+			}
+			request.Expect(rec)
+
+			if len(rec.fatals) != 1 {
+				t.Fatalf("expected exactly one fatal error, got %v", rec.fatals)
+			}
+			if !strings.Contains(rec.fatals[0], test.expectedMessage) {
+				t.Fatalf("expected error to contain %q, got %q", test.expectedMessage, rec.fatals[0])
+			}
+		})
+	}
+}
+
+func TestApiTest_ReportCapturesConcurrentMockInteractions(t *testing.T) {
+	const calls = 10
+	captor := &RecorderCaptor{}
+
+	apitest.New().
+		Report(captor).
+		Mocks(apitest.NewMock().
+			Get("http://concurrent.example.com/item").
+			RespondWith().
+			Status(http.StatusOK).
+			AnyTimes().
+			End()).
+		Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var wg sync.WaitGroup
+			for range calls {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					res, err := http.Get("http://concurrent.example.com/item")
+					if err != nil {
+						return
+					}
+					_ = res.Body.Close()
+				}()
+			}
+			wg.Wait()
+			w.WriteHeader(http.StatusOK)
+		})).
+		Get("/").
+		Expect(t).
+		Status(http.StatusOK).
+		End()
+
+	// inbound request + final response + a request and response per mock call
+	assert.Equal(t, 2+calls*2, len(captor.capturedRecorder.Events))
+}

@@ -3,7 +3,6 @@ package apitest
 import (
 	"html/template"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,7 +29,7 @@ func TestDiagram_BadgeCSSClass(t *testing.T) {
 }
 
 func TestFormatBodyContent_ShouldReplaceBody(t *testing.T) {
-	stream := ioutil.NopCloser(strings.NewReader("lol"))
+	stream := io.NopCloser(strings.NewReader("lol"))
 
 	val, err := formatBodyContent(stream, func(replacementBody io.ReadCloser) {
 		stream = replacementBody
@@ -82,7 +81,7 @@ func TestRecorderBuilder(t *testing.T) {
 	assert.Equal(t, 4, len(recorder.Events))
 	assert.Equal(t, "title", recorder.Title)
 	assert.Equal(t, "subTitle", recorder.SubTitle)
-	assert.Equal(t, map[string]interface{}{
+	assert.Equal(t, map[string]any{
 		"path":   "/user",
 		"name":   "some test",
 		"host":   "example.com",
@@ -125,7 +124,7 @@ func aRecorder() *Recorder {
 		AddMessageRequest(MessageRequest{Header: "A", Body: "B", Source: "mesReqSource"}).
 		AddMessageResponse(MessageResponse{Header: "C", Body: "D", Source: "mesResSource"}).
 		AddHttpResponse(aResponse()).
-		AddMeta(map[string]interface{}{
+		AddMeta(map[string]any{
 			"path":   "/user",
 			"name":   "some test",
 			"host":   "example.com",
@@ -150,7 +149,7 @@ func TestNewHttpResponseLogEntry_JSON(t *testing.T) {
 		ProtoMinor:    1,
 		StatusCode:    http.StatusOK,
 		ContentLength: 21,
-		Body:          ioutil.NopCloser(strings.NewReader(`{"a": 12345}`)),
+		Body:          io.NopCloser(strings.NewReader(`{"a": 12345}`)),
 	}
 
 	logEntry, err := newHTTPResponseLogEntry(response)
@@ -167,7 +166,7 @@ func TestNewHttpResponseLogEntry_PlainText(t *testing.T) {
 		ProtoMinor:    1,
 		StatusCode:    http.StatusOK,
 		ContentLength: 21,
-		Body:          ioutil.NopCloser(strings.NewReader(`abcdef`)),
+		Body:          io.NopCloser(strings.NewReader(`abcdef`)),
 	}
 
 	logEntry, err := newHTTPResponseLogEntry(response)
@@ -197,23 +196,71 @@ func aResponse() HttpResponse {
 	}
 }
 
-type FS struct {
-	CapturedCreateName   string
-	CapturedCreateFile   string
-	CapturedMkdirAllPath string
+func TestWebSequenceDiagram_RenamesOnlyExactDefaultParticipantNames(t *testing.T) {
+	dsl := &webSequenceDiagramDSL{meta: map[string]any{
+		"consumerName":        "consumer",
+		"systemUnderTestName": "app",
+	}}
+
+	dsl.addRequestRow(ConsumerDefaultName, SystemUnderTestDefaultName, "GET /")
+	dsl.addRequestRow(SystemUnderTestDefaultName, "client.example.com", "GET /")
+	dsl.addResponseRow("consultant.example.com", SystemUnderTestDefaultName, "200")
+
+	expected := "\"consumer\"->\"app\": (1) GET /\n" +
+		"\"app\"->\"client.example.com\": (2) GET /\n" +
+		"\"consultant.example.com\"->>\"app\": (3) 200\n"
+	assert.Equal(t, expected, dsl.toString())
 }
 
-func (m *FS) create(name string) (*os.File, error) {
-	m.CapturedCreateName = name
-	file, err := ioutil.TempFile("/tmp", "apitest")
-	if err != nil {
-		panic(err)
-	}
-	m.CapturedCreateFile = file.Name()
-	return file, nil
+type recordingFileSystem struct {
+	created []string
+	closed  int
+	content strings.Builder
 }
 
-func (m *FS) mkdirAll(path string, perm os.FileMode) error {
-	m.CapturedMkdirAllPath = path
+func (f *recordingFileSystem) create(name string) (io.WriteCloser, error) {
+	f.created = append(f.created, name)
+	return &recordingFile{fs: f}, nil
+}
+
+func (f *recordingFileSystem) mkdirAll(path string, perm os.FileMode) error {
 	return nil
+}
+
+type recordingFile struct {
+	fs *recordingFileSystem
+}
+
+func (r *recordingFile) Write(p []byte) (int, error) {
+	return r.fs.content.Write(p)
+}
+
+func (r *recordingFile) Close() error {
+	r.fs.closed++
+	return nil
+}
+
+func TestSequenceDiagramFormatter_ClosesTheDiagramFile(t *testing.T) {
+	fs := &recordingFileSystem{}
+	formatter := &SequenceDiagramFormatter{storagePath: ".sequence", fs: fs}
+	recorder := NewTestRecorder().
+		AddTitle("title").
+		AddMeta(map[string]any{"hash": "abc123"}).
+		AddHttpRequest(HttpRequest{
+			Source: ConsumerDefaultName,
+			Target: SystemUnderTestDefaultName,
+			Value:  httptest.NewRequest(http.MethodGet, "/user", nil),
+		}).
+		AddHttpResponse(HttpResponse{
+			Source: SystemUnderTestDefaultName,
+			Target: ConsumerDefaultName,
+			Value:  &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))},
+		})
+
+	formatter.Format(recorder)
+
+	assert.Equal(t, 1, len(fs.created))
+	assert.Equal(t, true, strings.HasSuffix(fs.created[0], "abc123.html"))
+	assert.Equal(t, 1, fs.closed)
+	assert.Equal(t, true, strings.Contains(fs.content.String(), "<!DOCTYPE html>"))
 }

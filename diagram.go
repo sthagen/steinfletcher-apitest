@@ -7,13 +7,11 @@ import (
 	"fmt"
 	htmlTemplate "html/template"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -37,28 +35,28 @@ type (
 	// SequenceDiagramFormatter implementation of a ReportFormatter
 	SequenceDiagramFormatter struct {
 		storagePath string
-		fs          fileSystem
+		fs          diagramFileSystem
 	}
 
-	fileSystem interface {
-		create(name string) (*os.File, error)
+	diagramFileSystem interface {
+		create(name string) (io.WriteCloser, error)
 		mkdirAll(path string, perm os.FileMode) error
 	}
 
-	osFileSystem struct{}
+	osDiagramFileSystem struct{}
 
 	webSequenceDiagramDSL struct {
 		data  bytes.Buffer
 		count int
-		meta  map[string]interface{}
+		meta  map[string]any
 	}
 )
 
-func (r *osFileSystem) create(name string) (*os.File, error) {
+func (r *osDiagramFileSystem) create(name string) (io.WriteCloser, error) {
 	return os.Create(name)
 }
 
-func (r *osFileSystem) mkdirAll(path string, perm os.FileMode) error {
+func (r *osDiagramFileSystem) mkdirAll(path string, perm os.FileMode) error {
 	return os.MkdirAll(path, perm)
 }
 
@@ -73,28 +71,36 @@ func (r *webSequenceDiagramDSL) addResponseRow(source string, target string, des
 func (r *webSequenceDiagramDSL) addRow(operation, source string, target string, description string) {
 	if name, ok := r.meta["consumerName"]; ok {
 		if n, ok := name.(string); ok {
-			source = strings.ReplaceAll(source, ConsumerDefaultName, n)
-			target = strings.ReplaceAll(target, ConsumerDefaultName, n)
+			source = renameParticipant(source, ConsumerDefaultName, n)
+			target = renameParticipant(target, ConsumerDefaultName, n)
 		}
 	}
 	if name, ok := r.meta["systemUnderTestName"]; ok {
 		if n, ok := name.(string); ok {
-			source = strings.ReplaceAll(source, SystemUnderTestDefaultName, n)
-			target = strings.ReplaceAll(target, SystemUnderTestDefaultName, n)
+			source = renameParticipant(source, SystemUnderTestDefaultName, n)
+			target = renameParticipant(target, SystemUnderTestDefaultName, n)
 		}
 	}
 	r.count++
-	r.data.WriteString(fmt.Sprintf("%s%s%s: (%d) %s\n",
+	fmt.Fprintf(&r.data, "%s%s%s: (%d) %s\n",
 		quoted(source),
 		operation,
 		quoted(target),
 		r.count,
-		description),
-	)
+		description)
 }
 
 func (r *webSequenceDiagramDSL) toString() string {
 	return r.data.String()
+}
+
+// renameParticipant swaps a default participant name (e.g. "sut") for the user supplied one.
+// Only exact matches are renamed so that hosts which merely contain the default name are left alone.
+func renameParticipant(participant, defaultName, name string) string {
+	if participant == defaultName {
+		return name
+	}
+	return participant
 }
 
 // Format formats the events received by the recorder
@@ -122,15 +128,16 @@ func (r *SequenceDiagramFormatter) Format(recorder *Recorder) {
 	if err != nil {
 		panic(err)
 	}
-	saveFilesTo := fmt.Sprintf("%s/%s", r.storagePath, fileName)
+	saveFilesTo := filepath.Join(r.storagePath, fileName)
 
 	f, err := r.fs.create(saveFilesTo)
 	if err != nil {
 		panic(err)
 	}
+	defer f.Close()
 
 	s, _ := filepath.Abs(saveFilesTo)
-	_, err = f.WriteString(out.String())
+	_, err = f.Write(out.Bytes())
 	if err != nil {
 		panic(err)
 	}
@@ -145,7 +152,7 @@ func SequenceDiagram(path ...string) *SequenceDiagramFormatter {
 	} else {
 		storagePath = path[0]
 	}
-	return &SequenceDiagramFormatter{storagePath: storagePath, fs: &osFileSystem{}}
+	return &SequenceDiagramFormatter{storagePath: storagePath, fs: &osDiagramFileSystem{}}
 }
 
 var templateFunc = &htmlTemplate.FuncMap{
@@ -266,12 +273,12 @@ func formatBodyContent(bodyReadCloser io.ReadCloser, replaceBody func(replacemen
 		return "", nil
 	}
 
-	body, err := ioutil.ReadAll(bodyReadCloser)
+	body, err := io.ReadAll(bodyReadCloser)
 	if err != nil {
 		return "", err
 	}
 
-	replaceBody(ioutil.NopCloser(bytes.NewReader(body)))
+	replaceBody(io.NopCloser(bytes.NewReader(body)))
 
 	buf := new(bytes.Buffer)
 	if json.Valid(body) {

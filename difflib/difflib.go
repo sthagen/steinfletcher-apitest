@@ -32,20 +32,6 @@ const (
 
 var colorizeLog = true
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func calculateRatio(matches, length int) float64 {
 	if length > 0 {
 		return 2.0 * float64(matches) / float64(length)
@@ -170,12 +156,12 @@ func (m *SequenceMatcher) chainB() {
 	m.bJunk = map[string]struct{}{}
 	if m.IsJunk != nil {
 		junk := m.bJunk
-		for s, _ := range b2j {
+		for s := range b2j {
 			if m.IsJunk(s) {
 				junk[s] = struct{}{}
 			}
 		}
-		for s, _ := range junk {
+		for s := range junk {
 			delete(b2j, s)
 		}
 	}
@@ -190,7 +176,7 @@ func (m *SequenceMatcher) chainB() {
 				popular[s] = struct{}{}
 			}
 		}
-		for s, _ := range popular {
+		for s := range popular {
 			delete(b2j, s)
 		}
 	}
@@ -428,7 +414,7 @@ func (m *SequenceMatcher) GetGroupedOpCodes(n int) [][]OpCode {
 	}
 	codes := m.GetOpCodes()
 	if len(codes) == 0 {
-		codes = []OpCode{OpCode{'e', 0, 1, 0, 1}}
+		codes = []OpCode{{'e', 0, 1, 0, 1}}
 	}
 	// Fixup leading and trailing groups if they show no changes.
 	if codes[0].Tag == 'e' {
@@ -457,7 +443,7 @@ func (m *SequenceMatcher) GetGroupedOpCodes(n int) [][]OpCode {
 		}
 		group = append(group, OpCode{c.Tag, i1, i2, j1, j2})
 	}
-	if len(group) > 0 && !(len(group) == 1 && group[0].Tag == 'e') {
+	if len(group) > 0 && (len(group) != 1 || group[0].Tag != 'e') {
 		groups = append(groups, group)
 	}
 	return groups
@@ -572,8 +558,8 @@ func WriteUnifiedDiff(writer io.Writer, diff UnifiedDiff) error {
 	SetColorizeLogs()
 	buf := bufio.NewWriter(writer)
 	defer buf.Flush()
-	wf := func(format string, args ...interface{}) error {
-		_, err := buf.WriteString(fmt.Sprintf(format, args...))
+	wf := func(format string, args ...any) error {
+		_, err := fmt.Fprintf(buf, format, args...)
 		return err
 	}
 	ws := func(s string) error {
@@ -655,7 +641,7 @@ func colorize(color, message string) string {
 func GetUnifiedDiffString(diff UnifiedDiff) (string, error) {
 	w := &bytes.Buffer{}
 	err := WriteUnifiedDiff(w, diff)
-	return string(w.Bytes()), err
+	return w.String(), err
 }
 
 // Convert range to the "ed" format.
@@ -695,8 +681,8 @@ func WriteContextDiff(writer io.Writer, diff ContextDiff) error {
 	buf := bufio.NewWriter(writer)
 	defer buf.Flush()
 	var diffErr error
-	wf := func(format string, args ...interface{}) {
-		_, err := buf.WriteString(fmt.Sprintf(format, args...))
+	wf := func(format string, args ...any) {
+		_, err := fmt.Fprintf(buf, format, args...)
 		if diffErr == nil && err != nil {
 			diffErr = err
 		}
@@ -780,7 +766,7 @@ func WriteContextDiff(writer io.Writer, diff ContextDiff) error {
 func GetContextDiffString(diff ContextDiff) (string, error) {
 	w := &bytes.Buffer{}
 	err := WriteContextDiff(w, diff)
-	return string(w.Bytes()), err
+	return w.String(), err
 }
 
 // Split a string on "\n" while preserving them. The output can be used
